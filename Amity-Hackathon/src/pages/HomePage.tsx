@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { FileText, ArrowRight } from 'lucide-react'
 import { useItems } from '../context/ItemsContext'
 import { ItemCard } from '../components/ItemCard'
@@ -17,7 +17,8 @@ export function HomePage() {
   const { items, loading, error, refresh, totalMatches, recoveredCount } = useItems()
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [claimItem, setClaimItem] = useState<Item | null>(null)
-  const [newItemId, setNewItemId] = useState<string | null>(null)
+  const location = useLocation()
+  const newItemId = (location.state as { newItemId?: string } | null)?.newItemId ?? null
 
   const filtered = items
     .filter(i => statusFilter === 'all' || i.type === statusFilter)
