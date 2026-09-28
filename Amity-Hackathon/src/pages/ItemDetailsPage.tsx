@@ -8,7 +8,7 @@ import { ItemThumb } from '../components/ItemThumb'
 import { ItemCard } from '../components/ItemCard'
 import { ClaimModal } from '../components/ClaimModal'
 import { fmtLong, fmtShort } from '../lib/format'
-import { parseContact, maskPhone, maskEmail, telHref, mailHref } from '../lib/contact'
+import { parseContact, telHref, mailHref } from '../lib/contact'
 import { getMine, isSaved, addToSaved, removeFromSaved } from '../lib/storage'
 import { markReturned } from '../lib/api'
 
@@ -56,7 +56,7 @@ export function ItemDetailsPage() {
   const isOwner = myIds.includes(item.id)
   const canMark = isOwner || !!unlockedContact
   const contact = parseContact(unlockedContact ?? '')
-  const maskedContact = unlockedContact ? null : { phones: item.type === 'lost' ? ['+91 98••• ••210'] : [], emails: [item.type === 'lost' ? 'a•••@college.edu' : 'f•••@college.edu'] }
+  const maskedContact = unlockedContact ? null : { phones: ['98••••••10'], emails: [] }
 
   const handleSave = () => {
     if (saved) { removeFromSaved(id!); setSaved(false) }

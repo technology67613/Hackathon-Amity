@@ -1,5 +1,4 @@
 import { useEffect } from 'react'
-import { X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { Item, Match } from '../types'
 import { ItemThumb } from './ItemThumb'

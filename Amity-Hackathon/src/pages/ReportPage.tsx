@@ -17,12 +17,7 @@ const QUESTION_CHIPS = ["What colour or brand is it?", "What's inside it?", "Wha
 interface LocationState { category?: Category; location?: string }
 
 function validateContact(contact: string): boolean {
-  const parts = contact.split(',').map(s => s.trim()).filter(Boolean)
-  if (parts.length === 0) return false
-  return parts.every(p => {
-    if (p.includes('@')) return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p)
-    return /^[+0-9][0-9\s\-]{9,18}$/.test(p)
-  })
+  return /^\d{10}$/.test(contact.trim())
 }
 
 export function ReportPage() {
@@ -62,7 +57,7 @@ export function ReportPage() {
     if (!form.date) errs.date = 'Date is required'
     if (!form.description.trim() || form.description.length < 5) errs.description = 'Description must be at least 5 characters'
     if (form.description.length > 200) errs.description = 'Description must be under 200 characters'
-    if (!validateContact(form.contact)) errs.contact = 'Enter a valid phone number, email, or both separated by comma'
+    if (!validateContact(form.contact)) errs.contact = 'Contact number must be exactly 10 digits'
     if (!form.question.trim()) errs.question = 'Please enter a verification question'
     if (!form.answer.trim()) errs.answer = 'Please enter a verification answer'
     setErrors(errs)
@@ -257,15 +252,20 @@ export function ReportPage() {
 
               {/* Contact */}
               <div style={{ marginBottom: 24 }}>
-                <label htmlFor="item-contact" style={labelStyle}>Contact Information <span style={{ color: '#E5484D' }}>*</span></label>
+                <label htmlFor="item-contact" style={labelStyle}>Contact Information (10-digit Phone Number) <span style={{ color: '#E5484D' }}>*</span></label>
                 <div style={{ position: 'relative' }}>
                   <Phone size={16} color="#8A9BB8" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
                   <input
                     id="item-contact"
-                    type="text"
+                    type="tel"
+                    inputMode="numeric"
                     value={form.contact}
-                    onChange={e => set('contact', e.target.value)}
-                    placeholder="Phone number or Email (or both, comma-separated)"
+                    onChange={e => {
+                      const cleaned = e.target.value.replace(/\D/g, '').slice(0, 10)
+                      set('contact', cleaned)
+                    }}
+                    placeholder="Enter 10-digit mobile number"
+                    maxLength={10}
                     style={{ ...inputStyle, borderColor: errors.contact ? '#E5484D' : '#DCE6F7' }}
                   />
                 </div>
@@ -364,7 +364,7 @@ export function ReportPage() {
               {[
                 'Be as detailed as possible (helps with faster recovery)',
                 'Use a clear item name and category',
-                'Add your contact info so the owner can reach you',
+                'Add your 10-digit contact number so the owner can reach you',
                 'Pick a question only the real owner/finder can answer',
               ].map((tip, i) => (
                 <li key={i} style={{ fontSize: 13, color: '#4A5B7A', lineHeight: 1.5 }}>{tip}</li>
