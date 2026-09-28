@@ -20,7 +20,10 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* Paths */
+    "paths": { "@lib/*": ["../src/lib/*"] }
   },
-  "include": ["src"]
+  "include": ["src", "../src/lib"]
 }

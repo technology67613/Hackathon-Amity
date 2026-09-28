@@ -1,0 +1,231 @@
+-- =====================================================================
+-- Campus Lost & Found - Database Schema (PostgreSQL)
+-- Derived from: MVP Project Brief (PDF) + 4 UI screens
+--   Screen 1: Home / Dashboard
+--   Screen 2: Item Details
+--   Screen 3: Search & Filters
+--   Screen 4: Report an Item
+-- =====================================================================
+
+DROP VIEW  IF EXISTS v_item_cards CASCADE;
+DROP TABLE IF EXISTS notifications CASCADE;
+DROP TABLE IF EXISTS favorites     CASCADE;
+DROP TABLE IF EXISTS item_images   CASCADE;
+DROP TABLE IF EXISTS items         CASCADE;
+DROP TABLE IF EXISTS categories    CASCADE;
+DROP TABLE IF EXISTS users         CASCADE;
+DROP TYPE  IF EXISTS item_type     CASCADE;
+DROP TYPE  IF EXISTS item_state    CASCADE;
+DROP TYPE  IF EXISTS contact_kind  CASCADE;
+DROP TYPE  IF EXISTS priority_level CASCADE;
+
+-- ---------------------------------------------------------------------
+-- ENUMS
+-- ---------------------------------------------------------------------
+-- PDF "Item Type": Lost or Found  (also the "Status" filter: All/Lost/Found)
+CREATE TYPE item_type AS ENUM ('lost', 'found');
+
+-- Lifecycle of a listing (for "Mark as Found" quick action in Item Details)
+CREATE TYPE item_state AS ENUM ('open', 'resolved');
+
+-- Drives the tel: / mailto: link for the contact button
+CREATE TYPE contact_kind AS ENUM ('phone', 'email');
+
+-- Optional "Priority" filter shown on the Search & Filters screen
+CREATE TYPE priority_level AS ENUM ('high', 'medium', 'low');
+
+-- ---------------------------------------------------------------------
+-- USERS  (avatar "R" in header, "My Reports", notifications)
+-- ---------------------------------------------------------------------
+CREATE TABLE users (
+    user_id     SERIAL PRIMARY KEY,
+    full_name   VARCHAR(100) NOT NULL,
+    email       VARCHAR(150) NOT NULL UNIQUE,
+    phone       VARCHAR(20),
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------------
+-- CATEGORIES  (PDF: Electronics, Documents, Accessories, Books, Bags, Other)
+-- ---------------------------------------------------------------------
+CREATE TABLE categories (
+    category_id SERIAL PRIMARY KEY,
+    name        VARCHAR(50) NOT NULL UNIQUE
+);
+
+-- ---------------------------------------------------------------------
+-- ITEMS  (core table - one row per Lost/Found listing)
+-- Maps 1:1 to the 7 form fields in the PDF:
+--   Item Type, Item Name, Category, Location, Date, Description,
+--   Contact Information
+-- ---------------------------------------------------------------------
+CREATE TABLE items (
+    item_id       SERIAL PRIMARY KEY,
+
+    -- form fields (all required, per PDF)
+    item_type     item_type     NOT NULL,                       -- Lost / Found
+    item_name     VARCHAR(120)  NOT NULL,                       -- e.g. Black Wallet
+    category_id   INT           NOT NULL REFERENCES categories(category_id),
+    location      VARCHAR(100)  NOT NULL,                       -- e.g. Library, Block A, Canteen
+    item_date     DATE          NOT NULL,                       -- date lost / found
+    description   TEXT          NOT NULL,                       -- e.g. Black leather wallet with college ID inside.
+    contact_info  VARCHAR(150)  NOT NULL,                       -- phone number OR email
+    contact_kind  contact_kind  NOT NULL,                       -- used to build tel: / mailto:
+
+    -- supporting fields seen in the UI
+    reported_by   INT           REFERENCES users(user_id) ON DELETE SET NULL,
+    priority      priority_level NOT NULL DEFAULT 'medium',     -- Priority filter (optional)
+    state         item_state    NOT NULL DEFAULT 'open',        -- "Mark as Found" quick action
+    resolved_at   TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    -- basic sanity checks
+    CONSTRAINT chk_item_date_not_future CHECK (item_date <= CURRENT_DATE),
+    CONSTRAINT chk_resolved_consistency CHECK (
+        (state = 'open'     AND resolved_at IS NULL) OR
+        (state = 'resolved' AND resolved_at IS NOT NULL)
+    ),
+    CONSTRAINT chk_contact_format CHECK (
+        (contact_kind = 'email' AND contact_info LIKE '%_@_%._%') OR
+        (contact_kind = 'phone' AND contact_info ~ '^[+0-9][0-9 \-]{6,18}$')
+    )
+);
+
+-- ---------------------------------------------------------------------
+-- ITEM IMAGES  (card thumbnail + 3 gallery thumbnails on Item Details)
+-- ---------------------------------------------------------------------
+CREATE TABLE item_images (
+    image_id    SERIAL PRIMARY KEY,
+    item_id     INT          NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
+    image_url   VARCHAR(500) NOT NULL,
+    is_primary  BOOLEAN      NOT NULL DEFAULT FALSE,
+    sort_order  SMALLINT     NOT NULL DEFAULT 0
+);
+
+-- only one primary image per item
+CREATE UNIQUE INDEX uq_item_primary_image
+    ON item_images(item_id) WHERE is_primary;
+
+-- ---------------------------------------------------------------------
+-- FAVORITES  (heart icon on Item Details)
+-- ---------------------------------------------------------------------
+CREATE TABLE favorites (
+    user_id    INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    item_id    INT NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, item_id)
+);
+
+-- ---------------------------------------------------------------------
+-- NOTIFICATIONS  (bell icon in header)
+-- ---------------------------------------------------------------------
+CREATE TABLE notifications (
+    notification_id SERIAL PRIMARY KEY,
+    user_id        INT  NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    item_id        INT  REFERENCES items(item_id) ON DELETE CASCADE,
+    message        VARCHAR(255) NOT NULL,
+    is_read        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------------
+-- INDEXES  (support Search, Status/Category/Location/Date filters, sort)
+-- ---------------------------------------------------------------------
+CREATE INDEX idx_items_type      ON items(item_type);          -- Status filter
+CREATE INDEX idx_items_category  ON items(category_id);        -- Category filter
+CREATE INDEX idx_items_location  ON items(location);           -- Location filter
+CREATE INDEX idx_items_date      ON items(item_date DESC);     -- Newest First / Date Range
+CREATE INDEX idx_items_reporter  ON items(reported_by);        -- My Reports
+CREATE INDEX idx_notif_user      ON notifications(user_id, is_read);
+
+-- Full-text search over name + description (e.g. "wallet")
+CREATE INDEX idx_items_fts ON items
+    USING GIN (to_tsvector('english', item_name || ' ' || description));
+
+-- Keep updated_at fresh
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_items_updated
+    BEFORE UPDATE ON items
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- VIEW: everything an item card needs (Dashboard + Search results)
+-- Card shows: name, Lost/Found badge, category, location, date,
+--             short description, action button
+-- Button label per PDF: Lost -> "I Found This", Found -> "Contact Finder"
+-- ---------------------------------------------------------------------
+CREATE VIEW v_item_cards AS
+SELECT
+    i.item_id,
+    i.item_name,
+    i.item_type,                                   -- Lost / Found badge
+    c.name                AS category,
+    i.location,
+    i.item_date,
+    i.description,
+    CASE i.item_type
+        WHEN 'lost'  THEN 'I Found This'
+        WHEN 'found' THEN 'Contact Finder'
+    END                   AS action_label,
+    CASE i.contact_kind
+        WHEN 'phone' THEN 'tel:'    || i.contact_info
+        WHEN 'email' THEN 'mailto:' || i.contact_info
+    END                   AS action_link,
+    i.contact_info,
+    i.priority,
+    i.state,
+    i.created_at,
+    img.image_url         AS primary_image
+FROM items i
+JOIN categories c        ON c.category_id = i.category_id
+LEFT JOIN item_images img ON img.item_id = i.item_id AND img.is_primary
+WHERE i.state = 'open';
+
+-- ---------------------------------------------------------------------
+-- SEED DATA  (matches the dashboard mockup)
+-- ---------------------------------------------------------------------
+INSERT INTO categories (name) VALUES
+    ('Electronics'), ('Documents'), ('Accessories'),
+    ('Books'), ('Bags'), ('Other');
+
+INSERT INTO users (full_name, email, phone) VALUES
+    ('Rahul Sharma', 'abc123@college.edu', '+91 98765 43210');
+
+INSERT INTO items
+    (item_type, item_name, category_id, location, item_date, description, contact_info, contact_kind, reported_by)
+VALUES
+ ('lost',  'Black Wallet',   (SELECT category_id FROM categories WHERE name='Accessories'), 'Canteen',   '2026-09-27', 'Black leather wallet with college ID inside.',        '+91 98765 43210',    'phone', 1),
+ ('found', 'White Earphones',(SELECT category_id FROM categories WHERE name='Electronics'), 'Library',   '2026-09-25', 'White wireless earphones (left one has a small scratch).', 'abc123@college.edu', 'email', 1),
+ ('lost',  'Blue Backpack',  (SELECT category_id FROM categories WHERE name='Bags'),        'Block A',   '2026-09-24', 'Blue backpack with a denim keychain.',                'abc123@college.edu', 'email', 1),
+ ('found', 'Student ID Card',(SELECT category_id FROM categories WHERE name='Documents'),   'Main Gate', '2026-09-22', 'College ID card (R. Sharma).',                         '+91 98765 43210',    'phone', 1),
+ ('lost',  'Water Bottle',   (SELECT category_id FROM categories WHERE name='Other'),       'Gym',       '2026-09-20', 'Blue steel water bottle with sticker.',               'abc123@college.edu', 'email', 1),
+ ('found', 'Books',          (SELECT category_id FROM categories WHERE name='Books'),       'Library',   '2026-09-18', 'Two textbooks (Data Structures & OS).',               '+91 98765 43210',    'phone', 1),
+ ('lost',  'Keys',           (SELECT category_id FROM categories WHERE name='Accessories'), 'Canteen',   '2026-09-16', 'Car keys with a blue keychain.',                      'abc123@college.edu', 'email', 1),
+ ('found', 'Mobile Phone',   (SELECT category_id FROM categories WHERE name='Electronics'), 'Block B',   '2026-09-15', 'iPhone (black cover).',                               '+91 98765 43210',    'phone', 1);
+
+-- ---------------------------------------------------------------------
+-- EXAMPLE QUERIES
+-- ---------------------------------------------------------------------
+-- Dashboard (newest first)
+--   SELECT * FROM v_item_cards ORDER BY item_date DESC, created_at DESC;
+--
+-- Search "wallet"
+--   SELECT * FROM v_item_cards
+--   WHERE to_tsvector('english', item_name || ' ' || description) @@ plainto_tsquery('english','wallet')
+--      OR item_name ILIKE '%wallet%' OR description ILIKE '%wallet%';
+--
+-- Status filter (Lost) + Category filter (Accessories)
+--   SELECT * FROM v_item_cards WHERE item_type = 'lost' AND category = 'Accessories';
+--
+-- Item details
+--   SELECT * FROM v_item_cards WHERE item_id = 1;
+--
+-- Mark as found / resolved
+--   UPDATE items SET state = 'resolved', resolved_at = NOW() WHERE item_id = 1;
